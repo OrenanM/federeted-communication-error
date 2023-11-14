@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+from scipy.stats import entropy
 from flcore.clients.clientbase import Client
 from utils.privacy import *
 
@@ -10,6 +11,10 @@ from utils.privacy import *
 class clientAVG(Client):
     def __init__(self, args, id, train_samples, test_samples, **kwargs):
         super().__init__(args, id, train_samples, test_samples, **kwargs)
+    
+    def client_entropy(self):
+        entropy_client = self.calculate_data_entropy()
+        return entropy_client
 
     def train(self):
         trainloader = self.load_train_data()
