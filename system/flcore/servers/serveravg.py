@@ -13,16 +13,43 @@ class FedAvg(Server):
         self.set_clients(clientAVG)
 
         print(f"\nJoin ratio / total clients: {self.join_ratio} / {self.num_clients}")
+        print(f"\nCurrent total users: {self.num_clients}")
         print("Finished creating server and clients.")
 
         # self.load_model()
         self.Budget = []
-
-
-    def train(self):
+    
+    def select_best_entropy(self):
+        dict_clients = {}
+        entropies = [0] * len(self.clients)  # initialize entropies with zeros
+        for i, client in enumerate(self.clients):
+            entropies[i] = client.client_entropy()
+            dict_clients[client] = entropies[i]
+        #print(entropies)  # print the list of entropies
+        #print(dict_clients)
+        
+        # Sort the dict_clients dictionary by its values (i.e., the entropies) in descending order
+        sorted_clients = sorted(dict_clients.items(), key=lambda x: x[1], reverse=True)
+    
+        # Select the top percentage of the clients with the highest entropies
+        num_clients = len(sorted_clients)
+        selected_clients = [client for client, entropy in sorted_clients[:num_clients//4]]
+        print(f'Selected Clients: {len(selected_clients)} clients')
+        return selected_clients
+        
+    def train(self, args):
         for i in range(self.global_rounds+1):
             s_t = time.time()
+
+            if args.entropy:
+                self.selected_clients = self.select_best_entropy()
+                print('Entropy Selection')
+            else:
+                self.selected_clients = self.select_clients()
+                print('Normal Selection')
+                
             self.selected_clients = self.select_clients()
+    
             self.send_models()
 
             if i%self.eval_gap == 0:
