@@ -75,6 +75,7 @@ class Server(object):
                             send_slow=send_slow)
             self.clients.append(client)
 
+
     # random select slow clients
     def select_slow_clients(self, slow_rate):
         slow_clients = [False for i in range(self.num_clients)]
@@ -94,10 +95,11 @@ class Server(object):
     def select_clients(self):
         if self.random_join_ratio:
             self.current_num_join_clients = np.random.choice(range(self.num_join_clients, self.num_clients+1), 1, replace=False)[0]
+            print(self.current_num_join_clients)
         else:
             self.current_num_join_clients = self.num_join_clients
         selected_clients = list(np.random.choice(self.clients, self.current_num_join_clients, replace=False))
-
+        print(f'Selected Clients: {len(selected_clients)} clients')
         return selected_clients
 
     def send_models(self):
