@@ -52,7 +52,12 @@ class Client(object):
             gamma=args.learning_rate_decay_gamma
         )
         self.learning_rate_decay = args.learning_rate_decay
-
+        
+    def calculate_data_entropy(self):
+        train_data = read_data(self.dataset, self.id, is_train=True)
+        data_points = train_data.get('y')
+        train_data_entropy = entropy(data_points)
+        return train_data_entropy
 
     def load_train_data(self, batch_size=None):
         if batch_size == None:
