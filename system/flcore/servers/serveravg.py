@@ -47,8 +47,6 @@ class FedAvg(Server):
             else:
                 self.selected_clients = self.select_clients()
                 print('Normal Selection')
-                
-            self.selected_clients = self.select_clients()
     
             self.send_models()
 
