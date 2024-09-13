@@ -5,9 +5,12 @@ import h5py
 import copy
 import time
 import random
+import math
+from scipy.spatial.distance import directed_hausdorff
 
 from utils.data_utils import read_client_data
 from utils.dlg import DLG
+from utils.cka import CudaCKA
 
 
 class Server(object):
@@ -63,6 +66,12 @@ class Server(object):
         self.eval_new_clients = False
         self.fine_tuning_epoch = args.fine_tuning_epoch
 
+        self.not_selected = []
+        self.received_clients = []
+
+        self.replace = args.replace
+
+
     def set_clients(self, clientObj):
         for i, train_slow, send_slow in zip(range(self.num_clients), self.train_slow_clients, self.send_slow_clients):
             train_data = read_client_data(self.dataset, i, is_train=True)
@@ -113,31 +122,136 @@ class Server(object):
             client.send_time_cost['num_rounds'] += 1
             client.send_time_cost['total_cost'] += 2 * (time.time() - start_time)
 
-    def receive_models(self):
+    def receive_models(self, substitutive = False, n = 1):
+        
         assert (len(self.selected_clients) > 0)
 
+        # print(len(self.selected_clients))
+        # print(int((1-self.client_drop_rate) * self.current_num_join_clients))
+
+        #seleciona os clientes e dropa onde houver erro
         active_clients = random.sample(
-            self.selected_clients, int((1-self.client_drop_rate) * self.current_num_join_clients))
+            self.selected_clients, math.ceil((1-self.client_drop_rate) * len(self.selected_clients)))
+
+        #armazena os clientes que foram dropado
+        self.drop_selected = [client for client in self.selected_clients 
+                             if client not in active_clients]
+        
+        print(f'====== Receipt {n} ======')
+        print(f"Selected: {[client.id for client in self.selected_clients]}")
+        print(f"Drop: {[client.id for client in self.drop_selected]}")
+        
+        #salva os clientes que estão adaptos a enviar seus dados
+        self.received_clients.extend(active_clients)
+        
+        print(f"Received: {[client.id for client in self.received_clients]}")
+
+        self.not_selected = [client for client in self.clients 
+                        if client not in self.selected_clients]
+
+        if len(self.received_clients) < self.num_join_clients and n != 1:
+            # retorna se não tiver o numero de clientes que foram solicitados
+            return
 
         self.uploaded_ids = []
         self.uploaded_weights = []
         self.uploaded_models = []
+        
         tot_samples = 0
-        for client in active_clients:
+
+        for client in self.received_clients:
             try:
                 client_time_cost = client.train_time_cost['total_cost'] / client.train_time_cost['num_rounds'] + \
-                        client.send_time_cost['total_cost'] / client.send_time_cost['num_rounds']
+                        client.send_time_cost['total_cost'] / client.send_time_cost['num_rounds']    
             except ZeroDivisionError:
                 client_time_cost = 0
+
             if client_time_cost <= self.time_threthold:
                 tot_samples += client.train_samples
                 self.uploaded_ids.append(client.id)
                 self.uploaded_weights.append(client.train_samples)
                 self.uploaded_models.append(client.model)
+        
         for i, w in enumerate(self.uploaded_weights):
             self.uploaded_weights[i] = w / tot_samples
+    
+    def similarity_samples(self, client1, client2):
+        '''Retorna o modulo da diferença do numero de dados de treinamento'''
+        return abs(client1.train_samples - client2.train_samples)
+    
+    def similarity_random(self, client1, client2):
+        '''Retorna valores aleatórios'''
+        return np.random.rand()
+    
+    def similarity_hausdorff(self, client1, client2):
+        '''Retorna a métrica de hausdorff baseado na distribuição dos labels de cada cliente'''
+        labels_1 = client1.send_distribution_labels()
+        labels_2 = client2.send_distribution_labels()
+        
+        dist1 = directed_hausdorff(labels_1, labels_2)[0]
+        dist2 = directed_hausdorff(labels_2, labels_1)[0]
+        return max(dist1, dist2)
+    
+    def similarity_cka(self, client1, client2):
+        model1 = client1.model # modelo do cliente 1
+        model2 = client2.model # modelo do cliente 2
+
+        cka_calculator = CudaCKA(self.device) # instancia o cka
+
+        data_representations = self.clients[0].load_test_data() # apenas para obter o tamanho dos dados
+        similaridade_cka = cka_calculator.calcule_cka(model1, model2, data_representations, self.algorithm)
+        
+        return -similaridade_cka
+    
+    def replace_client_samples(self, n):
+        """verifica qual a melhor opção para os clientes que foram dropados"""
+        self.selected_clients = []
+
+        if self.replace == 1:
+            similarity = self.similarity_samples
+        elif self.replace == 2:
+            similarity = self.similarity_random
+        elif self.replace == 3:
+            similarity = self.similarity_hausdorff
+        elif self.replace == 4:
+            similarity = self.similarity_cka
+
+        # define um espaço de busca com os 20% dos clientes com maior entropia
+        search_space = sorted(self.not_selected, key=lambda client: client.entropy, reverse=True)
+        n_space = math.ceil(len(search_space) * 0.2)
+        search_space = search_space[:n_space]
+        
+        for client_drop in self.drop_selected:
+            min_space = 10e10
+            substitutive = None
+
+            for client_substitutive in search_space:
+                space = similarity(client_drop, client_substitutive)
+                
+                if space < min_space:
+                    #busca menor distancia
+                    min_space = space
+                    substitutive = client_substitutive
+
+            if substitutive:
+                #remove o cliente subtituto dos não selecionados
+                self.not_selected.remove(substitutive)
+                search_space.remove(substitutive)
+                #adiciona o cliente substituto aos selecionados
+                self.selected_clients.append(substitutive)
+        
+        #envia os clientes substitutos
+        self.receive_models(substitutive=True, n=n)    
 
     def aggregate_parameters(self):
+        
+        if len(self.drop_selected) > 0 and self.replace:
+            n = 2
+            while len(self.drop_selected) > 0:
+                self.replace_client_samples(n)
+                n += 1   
+
+        self.received_clients = []
         assert (len(self.uploaded_models) > 0)
 
         self.global_model = copy.deepcopy(self.uploaded_models[0])
